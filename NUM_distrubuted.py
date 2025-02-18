@@ -3,16 +3,16 @@ import random
 import networkx as nx
 import matplotlib.pyplot as plt
 
-k=0.00003
-ALPHA=2
-iteration=4000
+k=0.0001
+ALPHA=500
+iteration=100
+MODE = "DUAL"
 
 
 
-
-
-
-
+lirning_rate_dict = { 1: 0.0001,2:0.001,500:1}
+factor = {1:1,2:2,20:2000000}
+k = lirning_rate_dict[ALPHA]
 
 # Define nodes and edges
 users = [f'a{i}' for i in range(6)] #0,1,2,3,4,5,
@@ -83,24 +83,12 @@ def f_func(rate,c):
     Returns:
         float: Computed value of the expression.
     """
-    #return (rate-c)**2 if rate > c else 0
-    if ALPHA == 1:
-        if rate >= c:
-            return 100000
-        
-        return 0.001 / (c - rate)
-    else:
-        # if rate >= c:
-        #     return float('inf')  # Infinite price if the capacity is exceeded
-        # return 1 * (rate / c) ** 2
-        
-         
-
-        
-        return  0.01*math.exp(rate/c) 
+    
+    return  factor[ALPHA]*(rate / c) **2
+    # return  ALPHA*(rate / c) ** 2
  
         
-        return 
+       
        
        
 
@@ -109,7 +97,7 @@ def x_r_tag(G, x_r):
     Computes the derivative of the utility function with respect to x_r.
     
     """
-    u_tag = G.nodes[x_r]["rate"] ** -ALPHA  
+    u_tag = min(G.nodes[x_r]["rate"] ** -ALPHA, 100000000000) 
     path_xr = G.nodes[x_r]["path"]
     sum = 0
     for edge in path_xr:
@@ -136,7 +124,7 @@ def  next_x_r(G, xr, learning_rate):
     """
     xr_t = x_r_tag(G, xr)
     previus = G.nodes[xr]['rate']
-    next =  max(previus + learning_rate * xr_t ,0.001)
+    next =  max(previus + learning_rate * xr_t ,0.1)
     path_of_xr = G.nodes[xr]["path"]
     for p in path_of_xr:
         sum_of_rates = G.edges[p]['sum_of_rate'] - previus + next
@@ -144,14 +132,48 @@ def  next_x_r(G, xr, learning_rate):
     G.nodes[xr]["rate"] = next
     update_link_cost(G, xr)
 
-def B(x,c):
-    """
-    this function is the result of integrateion on function f: 1/c-x from 0 to x.
-    Args:
-        x (float): The upper limit of the integration.
-        c (float): The constant value.
-    """
-    return math.log(c/c-x)
+
+
+def plus_function(G,edge):
+    lamda = G.edges[edge]['lamda']
+    y = G.edges[edge]['sum_of_rate']
+    c = G.edges[edge]['capacity']
+    if lamda > 0:
+        return y - c
+    return max(y-c, 0)
+
+
+
+
+def update_lamde(G, edge):
+    lamda_old = G.edges[edge]['lamda']
+    lamda_d = k * plus_function(G, edge)  # k is your dual step size
+    
+    # NOTE: Add lamda_d instead of subtracting it
+    lamda_new = lamda_old*0.9 + 0.1*lamda_d
+    
+    # Update Q and x for each flow using this edge
+    for x_r in G.edges[edge]['x_r']:
+        # Remove old contribution, add new
+        G.nodes[x_r]['Q'] += lamda_new - lamda_old
+        
+        # Then update the rate from Q (for α=1, x = 1/Q)
+        # Just as you had before:
+        next_x = (G.nodes[x_r]['Q'] + 1e-6)**(-1/ALPHA)
+        
+        # Update sum_of_rate on the path
+        old_rate = G.nodes[x_r]['rate']
+        for p in G.nodes[x_r]["path"]:
+            G.edges[p]['sum_of_rate'] = G.edges[p]['sum_of_rate'] - old_rate + next_x
+        
+        # Finally set the new rate
+        G.nodes[x_r]['rate'] = next_x
+    
+    # Update lambda on this edge
+    G.edges[edge]['lamda'] = lamda_new
+      
+
+
 
 
 def primal_distribute(edges, capacities, users, paths):
@@ -171,20 +193,27 @@ def primal_distribute(edges, capacities, users, paths):
     # Add nodes
     for user in users:
         G.add_node(user)
-        G.nodes[user]['rate'] = 0.01
+        G.nodes[user]['rate'] = 0.0001
+        G.nodes[user]['Q'] = 0
         G.nodes[user]['path'] = set()
         for key in paths.keys():
             if key[0] == user:
                 G.nodes[user]['path'].update(paths[key])
-
+        
     G.nodes[users[-1]]['rate'] = 0
     # Add edges with capacities
     for edge in edges:
         G.add_edge(edge[0], edge[1])
         G.edges[edge]['capacity'] = capacities.get(edge, 0)
         G.edges[edge]['x_r'] = set()
+        G.edges[edge]['lamda'] = 0.1
         G.edges[edge]['cost'] = 0
         G.edges[edge]['sum_of_rate'] = 0
+
+    for user in users:
+        path = G.nodes[user]['path']
+        for edge in path:
+            G.nodes[user]['Q'] += G.edges[edge]['lamda']
 
 
     
@@ -226,15 +255,23 @@ def primal_distribute(edges, capacities, users, paths):
     rates_statistic = {user: [] for user in users}
     users = users[:-1]
     for i in range(iteration):
-        random_node = random.choice(users)
-        next_x_r(G, random_node, k)
-        
-        # Compute the rates for each user
-        for user in users:
-            rates_statistic[user].append(G.nodes[user]['rate'])
+        if MODE == "PRIMAL":
+            random_node = random.choice(users)
+            next_x_r(G, random_node, k)
+            
+            # Compute the rates for each user
+            for user in users:
+                rates_statistic[user].append(G.nodes[user]['rate'])
+        else:
+            random_edge = random.choice(edges)
+            update_lamde(G, random_edge)
+            # Compute the rates for each user
+            for user in users:
+                rates_statistic[user].append(G.nodes[user]['rate'])
+
         
     # Compute the final rates
-        print("Rates:", rates_statistic)
+        # print("Rates:", rates_statistic)
 
 
 
