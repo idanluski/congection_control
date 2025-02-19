@@ -7,16 +7,16 @@ import matplotlib.pyplot as plt
 # Confirm the file was saved
 import os
 #os.path.abspath("/Users/iluski/Desktop/project_network_security/graph_generate/graph.png")
-filename = "/Users/iluski/Desktop/project_network_security/graph_generate/graph.png"
+filename = "/Users/ohav1/OneDrive/Desktop/Betihut/graph_generate/graph.png"
 
 k = 0.0001
 
-ALPHA = 1
+ALPHA = 20
 iteration = 200000
-MODE = "DUAL"
+MODE = "PRIMAL"
 #MODE = "DUAL"
-ROUTE = "D" #OR B
-DYNAMIC = False
+ROUTE = "D" #OR B/D
+DYNAMIC = True
 
 
 learning_rate_dict_P = {1: 0.001, 2: 0.0001, 20: 0.000000002}
@@ -86,6 +86,7 @@ def dymenic_path(G, xr, method, count):
     prev_rate = G.nodes[xr]['rate']
     if (path_edges != list(prev_path)) and (count < 10):
         print(f"node {xr} changed path from {list(prev_path)} to {path_edges}")
+        count = count + 1
 
     for edge in prev_path:
         G.edges[edge]['sum_of_rate'] -= prev_rate
@@ -95,6 +96,25 @@ def dymenic_path(G, xr, method, count):
 
     for edge in path_edges:
         G.edges[edge]['x_r'].add(xr)
+    if MODE == "DUAL":
+        min_rate = float('inf')
+        G.nodes[xr]['Q'] = sum(G.edges[edge]['lamda'] for edge in G.nodes[xr]['path'])
+        Q = G.nodes[xr]['Q']
+        # Compute rate based on α
+        if ALPHA == 1:  # Proportional fairness
+            next_x = 1 / max(Q, 1e-6)
+
+        elif ALPHA == float('inf'):  # Max-min fairness
+            next_x = 1 / max(Q, 1e-6)
+            min_rate = min(min_rate, next_x)  # Track min rate in the network
+
+        else:  # General α-fairness
+            next_x = Q ** (-1 / ALPHA)
+        G.nodes[xr]['rate'] = next_x
+        for edge in path_edges:
+            G.edges[edge]['sum_of_rate'] += G.nodes[xr]['rate']
+    return count
+
 
 
 def utility(x, a):
@@ -200,37 +220,38 @@ def update_lamde(G, edge):
     # Step 1: Compute new rates based on alpha fairness
     min_rate = float('inf')  # Track the minimum rate for α=∞ fairness
     updated_rates = {}  # Store updated rates before applying
+    if not DYNAMIC: #same path only one edge changes
+        for x_r in G.edges[edge]['x_r']:
+            # Remove old contribution, add new lambda update
+            G.nodes[x_r]['Q'] += lamda_new - lamda_old
+            Q = G.nodes[x_r]['Q']
 
-    for x_r in G.edges[edge]['x_r']:
-        # Remove old contribution, add new lambda update
-        G.nodes[x_r]['Q'] += lamda_new - lamda_old
-        Q = G.nodes[x_r]['Q']
+            # Compute rate based on α
+            if ALPHA == 1:  # Proportional fairness
+                next_x = 1 / max(Q, 1e-6)
 
-        # Compute rate based on α
-        if ALPHA == 1:  # Proportional fairness
-            next_x = 1 / max(Q, 1e-6)
+            elif ALPHA == float('inf'):  # Max-min fairness
+                next_x = 1 / max(Q, 1e-6)
+                min_rate = min(min_rate, next_x)  # Track min rate in the network
 
-        elif ALPHA == float('inf'):  # Max-min fairness
-            next_x = 1 / max(Q, 1e-6)
-            min_rate = min(min_rate, next_x)  # Track min rate in the network
-        else:  # General α-fairness
-            next_x = Q ** (-1 / ALPHA)
+            else:  # General α-fairness
+                next_x = Q ** (-1 / ALPHA)
 
-        updated_rates[x_r] = next_x  # Store new rate
+            updated_rates[x_r] = next_x  # Store new rate
 
-    # Step 2: If α=∞, force all flows on this bottleneck to the same min rate
-    if ALPHA == float('inf'):
-        for x_r in updated_rates:
-            updated_rates[x_r] = min_rate  # Enforce equal rates on bottlenecked users
+        # Step 2: If α=∞, force all flows on this bottleneck to the same min rate
+        if ALPHA == float('inf'):
+            for x_r in updated_rates:
+                updated_rates[x_r] = min_rate  # Enforce equal rates on bottlenecked users
 
-    # Step 3: Apply the new rates and update sum_of_rate on links
-    for x_r, new_rate in updated_rates.items():
-        old_rate = G.nodes[x_r]['rate']
-        for p in G.nodes[x_r]["path"]:
-            G.edges[p]['sum_of_rate'] = G.edges[p]['sum_of_rate'] - old_rate + new_rate
-        G.nodes[x_r]['rate'] = new_rate  # Apply final rate
+        # Step 3: Apply the new rates and update sum_of_rate on links
+        for x_r, new_rate in updated_rates.items():
+            old_rate = G.nodes[x_r]['rate']
+            for p in G.nodes[x_r]["path"]:
+                G.edges[p]['sum_of_rate'] = G.edges[p]['sum_of_rate'] - old_rate + new_rate
+            G.nodes[x_r]['rate'] = new_rate  # Apply final rate
 
-    # Set the new lambda value for the edge
+        # Set the new lambda value for the edge
     G.edges[edge]['lamda'] = lamda_new
 
 
@@ -325,7 +346,7 @@ def main(edges, capacities, users, paths):
         if MODE == "PRIMAL":
             random_node = random.choice(users)
             if DYNAMIC:
-                dymenic_path(G, random_node, 'cost', count)
+                count = dymenic_path(G, random_node, 'cost', count)
             next_x_r(G, random_node, k)
             
             # Compute the rates for each user
@@ -334,6 +355,11 @@ def main(edges, capacities, users, paths):
         else:
             random_edge = random.choice(edges)
             update_lamde(G, random_edge)
+            if DYNAMIC:
+                for xr in users:
+                    count = dymenic_path(G, xr, 'lamda', count)
+
+
             # Compute the rates for each user
             for user in users:
                 rates_statistic[user].append(G.nodes[user]['rate'])
