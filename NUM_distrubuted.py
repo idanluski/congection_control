@@ -3,11 +3,18 @@ import random
 import networkx as nx
 import matplotlib.pyplot as plt
 
+
+# Confirm the file was saved
+import os
+#os.path.abspath("/Users/iluski/Desktop/project_network_security/graph_generate/graph.png")
+filename = "/Users/iluski/Desktop/project_network_security/graph_generate/graph.png"
+
 k = 0.0001
-ALPHA = float('inf')
+
+ALPHA = 1
 iteration = 200000
-#MODE = "PRIMAL"
 MODE = "DUAL"
+#MODE = "DUAL"
 ROUTE = "D" #OR B
 DYNAMIC = False
 
@@ -206,7 +213,6 @@ def update_lamde(G, edge):
         elif ALPHA == float('inf'):  # Max-min fairness
             next_x = 1 / max(Q, 1e-6)
             min_rate = min(min_rate, next_x)  # Track min rate in the network
-
         else:  # General α-fairness
             next_x = Q ** (-1 / ALPHA)
 
@@ -251,8 +257,14 @@ def main(edges, capacities, users, paths):
         for key in paths.keys():
             if key[0] == user:
                 G.nodes[user]['path'].update(paths[key])
-        
-    G.nodes[users[-1]]['rate'] = 0
+
+    user_set = set(users)
+    user_send = set()
+    for p in paths.keys():
+        user_send.add(p[0])
+    user_not_send = user_set - user_send  
+    for user in user_not_send:  
+        G.nodes[user]['rate'] = 0 
 
     # Add edges with capacities
     for edge in edges:
@@ -263,12 +275,12 @@ def main(edges, capacities, users, paths):
         G.edges[edge]['cost'] = 0
         G.edges[edge]['sum_of_rate'] = 0
 
-    for user in users:
+    for user in user_send:
         path = G.nodes[user]['path']
         for edge in path:
             G.nodes[user]['Q'] += G.edges[edge]['lamda']
 
-    for xr in users[:-1]:
+    for xr in user_send:
         G.nodes[xr]['dest'] = random.choice([user for user in users if user != xr])
 
 
@@ -307,8 +319,8 @@ def main(edges, capacities, users, paths):
         #path_text = " → ".join(path)
         #path_labels[mid_edge] = path_text
 
-    rates_statistic = {user: [] for user in users}
-    users = users[:-1]
+    rates_statistic = {user: [] for user in user_send}
+    users = list(user_send)
     for i in range(iteration):
         if MODE == "PRIMAL":
             random_node = random.choice(users)
@@ -348,4 +360,103 @@ def main(edges, capacities, users, paths):
     plt.show()
 
 
+
+
+
+def generate_random_graph(num_users=6, num_edges=8, seed=None):
+    """
+    Generates a connected random graph and extracts its components.
+    
+    Args:
+        num_users (int): Number of users (nodes).
+        num_edges (int): Number of edges (must be at least num_users-1).
+        seed (int, optional): Random seed for reproducibility.
+    
+    Returns:
+        tuple: (edges, capacities, users, paths, G)
+    """
+    if seed is not None:
+        random.seed(seed)
+    
+    # Create a connected random graph using NetworkX
+    G = nx.generators.random_graphs.dense_gnm_random_graph(num_users, num_edges, seed)
+    
+    # Ensure all nodes are labeled as 'a0', 'a1', etc.
+    mapping = {i: f'a{i}' for i in range(num_users)}
+    G = nx.relabel_nodes(G, mapping)
+
+    # Extract users
+    users = list(G.nodes)
+
+    # Extract edges
+    edges = list(G.edges)
+
+    # Assign capacities (random between 1 and 10)
+    capacities = {edge: random.randint(1, 10) for edge in edges}
+
+    # Generate random paths (random start and end points)
+    paths = {}
+    for _ in range(num_users // 2):  # Generate a few random paths
+        start, end = random.sample(users, 2)
+        try:
+            path = nx.shortest_path(G, start, end)
+            paths[(start, end)] = [(path[i], path[i+1]) for i in range(len(path) - 1)]
+        except nx.NetworkXNoPath:
+            continue  # Skip if no path exists (shouldn't happen in a connected graph)
+
+    return edges, capacities, users, paths, G
+
+def plot_and_save_graph_with_paths(G, capacities, paths, filename="graph.png"):
+    """
+    Plots the generated graph with labeled nodes, edges, and paths highlighted, and saves the figure.
+    
+    Args:
+        G (networkx.Graph): The generated graph.
+        capacities (dict): Dictionary with edge capacities.
+        paths (dict): Dictionary with different paths.
+        filename (str): The name of the file to save the graph image.
+    """
+    plt.figure(figsize=(8, 6))
+    
+    pos = nx.spring_layout(G, seed=42)  # Layout for better visualization
+    
+    # Draw the base graph
+    nx.draw(G, pos, with_labels=True, node_size=700, node_color="lightblue", edge_color="gray", linewidths=1, font_size=12)
+    
+    # Draw edge labels (capacities)
+    edge_labels = {edge: str(capacities[edge]) for edge in G.edges}
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=10, label_pos=0.5)
+    
+    # Count how many times each edge appears in paths
+    edge_usage = {}
+    for path in paths.values():
+        for edge in path:
+            edge_usage[edge] = edge_usage.get(edge, 0) + 1
+
+    # Highlight paths with different colors and adjust edge width
+    colors = ["red", "blue", "green", "purple", "orange"]
+    for i, (key, path) in enumerate(paths.items()):
+        path_edges = path  # Get list of edges in the path
+        color = colors[i % len(colors)]  # Cycle through colors
+        
+        nx.draw_networkx_edges(G, pos, edgelist=path_edges, edge_color=color, width=2.5, style="dashed", label=f"Path {key}")
+
+    # Adjust edge width for overlapping paths
+    for edge, count in edge_usage.items():
+        nx.draw_networkx_edges(G, pos, edgelist=[edge], width=1.5 + count, edge_color="black")
+
+    plt.title("Generated Random Graph with Highlighted Paths")
+    plt.legend(loc="best")
+    
+    # Save the plot
+    plt.savefig(filename, format="png")
+    plt.show()
+
+# Generate graph and plot with paths, then save
+edges, capacities, users, paths, G = generate_random_graph(num_users=6, num_edges=8, seed=42)
+plot_and_save_graph_with_paths(G, capacities, paths, filename=filename)
+
 main(edges, capacities, users, paths)
+
+
+
