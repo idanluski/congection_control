@@ -3,16 +3,22 @@ import random
 import networkx as nx
 import matplotlib.pyplot as plt
 
-k=0.0001
-ALPHA=500
-iteration=100
+k = 0.0001
+ALPHA = float('inf')
+iteration = 200000
+#MODE = "PRIMAL"
 MODE = "DUAL"
+ROUTE = "D" #OR B
+DYNAMIC = False
 
 
-
-lirning_rate_dict = { 1: 0.0001,2:0.001,500:1}
+learning_rate_dict_P = {1: 0.001, 2: 0.0001, 20: 0.000000002}
+learning_rate_dict = {1: 0.0001, 2: 0.001,  float('inf'): 0.001} #dual
 factor = {1:1,2:2,20:2000000}
-k = lirning_rate_dict[ALPHA]
+if MODE == "PRIMAL":
+    k = learning_rate_dict_P[ALPHA]
+else:
+    k = learning_rate_dict[ALPHA]
 
 # Define nodes and edges
 users = [f'a{i}' for i in range(6)] #0,1,2,3,4,5,
@@ -52,6 +58,37 @@ paths = {
 #     ('S2', 'D1'): ['S2', 'B1', 'A1', 'A2', 'D1'],  # Another shared path
 # }
 
+def find_shortest_path_dijkstra(G, source, target, weight_key='cost'):
+    return nx.shortest_path(G, source=source, target=target, weight=lambda u, v, d: d.get(weight_key, 1), method="dijkstra")
+
+
+def find_shortest_path_bellman_ford(G, source, target, weight_key='cost'):
+
+    return nx.shortest_path(G, source=source, target=target, weight=lambda u, v, d: d.get(weight_key, 1), method='bellman-ford')
+
+
+def dymenic_path(G, xr, method, count):
+    dest = G.nodes[xr]['dest']
+    if ROUTE == "D":
+        path = find_shortest_path_dijkstra(G, xr, dest, weight_key=method)
+    else:
+        path = find_shortest_path_bellman_ford(G, xr, dest, weight_key=method)
+    path_edges = list(zip(path[:-1], path[1:]))
+
+    prev_path = G.nodes[xr]['path']
+    prev_rate = G.nodes[xr]['rate']
+    if (path_edges != list(prev_path)) and (count < 10):
+        print(f"node {xr} changed path from {list(prev_path)} to {path_edges}")
+
+    for edge in prev_path:
+        G.edges[edge]['sum_of_rate'] -= prev_rate
+        G.edges[edge]['x_r'].discard(xr)
+
+    G.nodes[xr]['path'] = path_edges
+
+    for edge in path_edges:
+        G.edges[edge]['x_r'].add(xr)
+
 
 def utility(x, a):
     """
@@ -72,6 +109,7 @@ def utility(x, a):
     
     return (x ** (1 - a)) / (1 - a)
 
+
 def f_func(rate,c):
     """
     Computes the expression: 1 / (c - x).
@@ -86,18 +124,17 @@ def f_func(rate,c):
     
     return  factor[ALPHA]*(rate / c) **2
     # return  ALPHA*(rate / c) ** 2
- 
-        
-       
-       
-       
+
 
 def x_r_tag(G, x_r):
     """
     Computes the derivative of the utility function with respect to x_r.
     
     """
-    u_tag = min(G.nodes[x_r]["rate"] ** -ALPHA, 100000000000) 
+    if ALPHA >2:
+        u_tag = min(G.nodes[x_r]["rate"] ** -ALPHA, 100000000)
+    else:
+        u_tag = min(G.nodes[x_r]["rate"] ** -ALPHA, 1000)
     path_xr = G.nodes[x_r]["path"]
     sum = 0
     for edge in path_xr:
@@ -118,6 +155,7 @@ def update_link_cost(G,xr):
         f = f_func(sum_of_rates, capacity)
         G.edges[edge]['cost'] = f
 
+
 def  next_x_r(G, xr, learning_rate):
     """
     Computes the next value of x_r using the gradient descent method.
@@ -127,56 +165,70 @@ def  next_x_r(G, xr, learning_rate):
     next =  max(previus + learning_rate * xr_t ,0.1)
     path_of_xr = G.nodes[xr]["path"]
     for p in path_of_xr:
-        sum_of_rates = G.edges[p]['sum_of_rate'] - previus + next
+        if DYNAMIC:
+            sum_of_rates = G.edges[p]['sum_of_rate'] + next
+        else:
+            sum_of_rates = G.edges[p]['sum_of_rate'] - previus + next
         G.edges[p]['sum_of_rate'] = sum_of_rates
     G.nodes[xr]["rate"] = next
     update_link_cost(G, xr)
 
 
-
-def plus_function(G,edge):
-    lamda = G.edges[edge]['lamda']
+def plus_function(G, edge):
     y = G.edges[edge]['sum_of_rate']
     c = G.edges[edge]['capacity']
-    if lamda > 0:
-        return y - c
-    return max(y-c, 0)
-
-
+    return max(y - c, 0)  # Ensure non-negative value
 
 
 def update_lamde(G, edge):
+    """
+    Updates the lambda values (prices) in the dual algorithm for different α values.
+    """
     lamda_old = G.edges[edge]['lamda']
     lamda_d = k * plus_function(G, edge)  # k is your dual step size
-    
-    # NOTE: Add lamda_d instead of subtracting it
-    lamda_new = lamda_old*0.9 + 0.1*lamda_d
-    
-    # Update Q and x for each flow using this edge
+
+    # Update lambda value
+    lamda_new = max(lamda_old + lamda_d, 0)  # Ensure non-negative lambda
+
+    # Step 1: Compute new rates based on alpha fairness
+    min_rate = float('inf')  # Track the minimum rate for α=∞ fairness
+    updated_rates = {}  # Store updated rates before applying
+
     for x_r in G.edges[edge]['x_r']:
-        # Remove old contribution, add new
+        # Remove old contribution, add new lambda update
         G.nodes[x_r]['Q'] += lamda_new - lamda_old
-        
-        # Then update the rate from Q (for α=1, x = 1/Q)
-        # Just as you had before:
-        next_x = (G.nodes[x_r]['Q'] + 1e-6)**(-1/ALPHA)
-        
-        # Update sum_of_rate on the path
+        Q = G.nodes[x_r]['Q']
+
+        # Compute rate based on α
+        if ALPHA == 1:  # Proportional fairness
+            next_x = 1 / max(Q, 1e-6)
+
+        elif ALPHA == float('inf'):  # Max-min fairness
+            next_x = 1 / max(Q, 1e-6)
+            min_rate = min(min_rate, next_x)  # Track min rate in the network
+
+        else:  # General α-fairness
+            next_x = Q ** (-1 / ALPHA)
+
+        updated_rates[x_r] = next_x  # Store new rate
+
+    # Step 2: If α=∞, force all flows on this bottleneck to the same min rate
+    if ALPHA == float('inf'):
+        for x_r in updated_rates:
+            updated_rates[x_r] = min_rate  # Enforce equal rates on bottlenecked users
+
+    # Step 3: Apply the new rates and update sum_of_rate on links
+    for x_r, new_rate in updated_rates.items():
         old_rate = G.nodes[x_r]['rate']
         for p in G.nodes[x_r]["path"]:
-            G.edges[p]['sum_of_rate'] = G.edges[p]['sum_of_rate'] - old_rate + next_x
-        
-        # Finally set the new rate
-        G.nodes[x_r]['rate'] = next_x
-    
-    # Update lambda on this edge
+            G.edges[p]['sum_of_rate'] = G.edges[p]['sum_of_rate'] - old_rate + new_rate
+        G.nodes[x_r]['rate'] = new_rate  # Apply final rate
+
+    # Set the new lambda value for the edge
     G.edges[edge]['lamda'] = lamda_new
-      
 
 
-
-
-def primal_distribute(edges, capacities, users, paths):
+def main(edges, capacities, users, paths):
     
     """
     Plots a network graph with edges, nodes, and paths.
@@ -188,7 +240,7 @@ def primal_distribute(edges, capacities, users, paths):
         paths (dict): Dictionary with source-destination pairs as keys and paths as values.
     """
     G = nx.Graph()
-
+    count = 0
     
     # Add nodes
     for user in users:
@@ -201,6 +253,7 @@ def primal_distribute(edges, capacities, users, paths):
                 G.nodes[user]['path'].update(paths[key])
         
     G.nodes[users[-1]]['rate'] = 0
+
     # Add edges with capacities
     for edge in edges:
         G.add_edge(edge[0], edge[1])
@@ -215,8 +268,10 @@ def primal_distribute(edges, capacities, users, paths):
         for edge in path:
             G.nodes[user]['Q'] += G.edges[edge]['lamda']
 
+    for xr in users[:-1]:
+        G.nodes[xr]['dest'] = random.choice([user for user in users if user != xr])
 
-    
+
     # Update edges with x_r values
     for key, path in paths.items():
         for p in path:
@@ -257,6 +312,8 @@ def primal_distribute(edges, capacities, users, paths):
     for i in range(iteration):
         if MODE == "PRIMAL":
             random_node = random.choice(users)
+            if DYNAMIC:
+                dymenic_path(G, random_node, 'cost', count)
             next_x_r(G, random_node, k)
             
             # Compute the rates for each user
@@ -286,8 +343,9 @@ def primal_distribute(edges, capacities, users, paths):
         plt.plot(iteration_range, rates_statistic[user], label=user)
     plt.xlabel("Iteration")
     plt.ylabel("Rate")
-    plt.title("Rate Convergence")
+    plt.title(f"Rate Convergence: mode {MODE}learning rate {k} ALPHA {ALPHA}")
     plt.legend()
     plt.show()
 
-primal_distribute(edges, capacities, users, paths)
+
+main(edges, capacities, users, paths)
