@@ -7,17 +7,21 @@ import matplotlib.pyplot as plt
 # Confirm the file was saved
 import os
 #os.path.abspath("/Users/iluski/Desktop/project_network_security/graph_generate/graph.png")
-filename = "/Users/ohav1/OneDrive/Desktop/Betihut/graph_generate/graph.png"
+
+filename = "/Users/iluski/Desktop/project_network_security/graph_generate/"
+ 
 
 k = 0.0001
 
-ALPHA = 20
-iteration = 200000
+ALPHA = 1
+iteration = 1000000
 MODE = "PRIMAL"
 #MODE = "DUAL"
 ROUTE = "D" #OR B/D
-DYNAMIC = True
-
+DYNAMIC = False
+short = "dijakstra" if ROUTE == "D" else "bellman_ford"
+add_on = f"route {short}"  if DYNAMIC else ''
+default_topology = True
 
 learning_rate_dict_P = {1: 0.001, 2: 0.0001, 20: 0.000000002}
 learning_rate_dict = {1: 0.0001, 2: 0.001,  float('inf'): 0.001} #dual
@@ -27,6 +31,9 @@ if MODE == "PRIMAL":
 else:
     k = learning_rate_dict[ALPHA]
 
+
+before_run = filename + f"ALPHA={ALPHA}_MODE_{MODE}_{add_on}_before_run.png"
+after_run = filename + f"ALPHA={ALPHA}_MODE_{MODE}_{add_on}_after_run.png"
 # Define nodes and edges
 users = [f'a{i}' for i in range(6)] #0,1,2,3,4,5,
 edges = [(f'a{i}', f'a{i+1}') for i in range(5)]  # Linear connections
@@ -75,7 +82,8 @@ def find_shortest_path_bellman_ford(G, source, target, weight_key='cost'):
 
 
 def dymenic_path(G, xr, method, count):
-    dest = G.nodes[xr]['dest']
+    #dest = random.choice(G.nodes[xr]['dest'])
+    dest = G.nodes[xr]['dest'][0]
     if ROUTE == "D":
         path = find_shortest_path_dijkstra(G, xr, dest, weight_key=method)
     else:
@@ -139,7 +147,7 @@ def utility(x, a):
 
 def f_func(rate,c):
     """
-    Computes the expression: 1 / (c - x).
+    Computes the expression: 1 / (c - x)**2.
 
     Args:
         x (float): The base value (must be different from c).
@@ -275,6 +283,7 @@ def main(edges, capacities, users, paths):
         G.nodes[user]['rate'] = 0.0001
         G.nodes[user]['Q'] = 0
         G.nodes[user]['path'] = set()
+        G.nodes[user]['dest'] = []
         for key in paths.keys():
             if key[0] == user:
                 G.nodes[user]['path'].update(paths[key])
@@ -301,8 +310,8 @@ def main(edges, capacities, users, paths):
         for edge in path:
             G.nodes[user]['Q'] += G.edges[edge]['lamda']
 
-    for xr in user_send:
-        G.nodes[xr]['dest'] = random.choice([user for user in users if user != xr])
+    for p in paths.keys():# get the destinations
+        G.nodes[p[0]]['dest'].append(p[1])
 
 
     # Update edges with x_r values
@@ -318,7 +327,7 @@ def main(edges, capacities, users, paths):
     pos = nx.spring_layout(G, seed=42)  # Layout for visualization
 
     # Draw nodes
-    nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=1000, font_size=10)
+    #nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=1000, font_size=10)
 
     # # Draw edge labels (capacities)
     # edge_labels = {(u, v): f"{capacities.get((u, v), 0)}" for u, v in edges}
@@ -339,6 +348,9 @@ def main(edges, capacities, users, paths):
         
         #path_text = " → ".join(path)
         #path_labels[mid_edge] = path_text
+
+    if DYNAMIC:
+        plot_graph_with_full_path_legend(G, capacities, paths, filename=before_run)
 
     rates_statistic = {user: [] for user in user_send}
     users = list(user_send)
@@ -375,23 +387,35 @@ def main(edges, capacities, users, paths):
 
     iteration_range = range(iteration)
     rate_convergence = [[G.nodes[user]['rate'] for user in users] for _ in iteration_range]
+    if DYNAMIC:
+        final_path = {}
+        for user in users:
+            key = f"({user},{G.nodes[user]['dest']})"
+            final_path[key] = G.nodes[user]['path']
+        plot_graph_with_full_path_legend(G, capacities, final_path, filename=after_run)
 
     plt.figure()
     for i, user in enumerate(users):
         plt.plot(iteration_range, rates_statistic[user], label=user)
     plt.xlabel("Iteration")
     plt.ylabel("Rate")
-    plt.title(f"Rate Convergence: mode {MODE}learning rate {k} ALPHA {ALPHA}")
+
+    name = f"Rate Convergence: mode {MODE} learning rate {k} ALPHA {ALPHA}  {add_on}"
+    plt.title(name)
     plt.legend()
+    name = name.replace(" ", "_")
+    path_file = filename + name + ".png"
+    plt.savefig(path_file, format="png")
     plt.show()
 
 
 
 
 
-def generate_random_graph(num_users=6, num_edges=8, seed=None):
+def generate_graph_with_random_source_dest_pairs(num_users=6, num_edges=8, seed=None):
     """
-    Generates a connected random graph and extracts its components.
+    Generates a connected random graph where each randomly chosen source node has exactly one destination.
+    The destinations do not have to be unique.
     
     Args:
         num_users (int): Number of users (nodes).
@@ -420,21 +444,27 @@ def generate_random_graph(num_users=6, num_edges=8, seed=None):
     # Assign capacities (random between 1 and 10)
     capacities = {edge: random.randint(1, 10) for edge in edges}
 
-    # Generate random paths (random start and end points)
+    # Select sources (all nodes will be a source)
+    sources = users.copy()
+    
+    # Assign each source exactly one destination (destinations do not have to be unique)
     paths = {}
-    for _ in range(num_users // 2):  # Generate a few random paths
-        start, end = random.sample(users, 2)
+    
+    for source in sources:
+        available_destinations = [node for node in users if node != source]  # Any node except itself
+        destination = random.choice(available_destinations)  # Choose a random destination
         try:
-            path = nx.shortest_path(G, start, end)
-            paths[(start, end)] = [(path[i], path[i+1]) for i in range(len(path) - 1)]
+            path = nx.shortest_path(G, source, destination)
+            paths[(source, destination)] = [(path[i], path[i+1]) for i in range(len(path) - 1)]
         except nx.NetworkXNoPath:
             continue  # Skip if no path exists (shouldn't happen in a connected graph)
 
     return edges, capacities, users, paths, G
 
-def plot_and_save_graph_with_paths(G, capacities, paths, filename="graph.png"):
+
+def plot_graph_with_full_path_legend(G, capacities, paths, filename="graph.png"):
     """
-    Plots the generated graph with labeled nodes, edges, and paths highlighted, and saves the figure.
+    Plots the generated graph with distinct colors for each path, labeled nodes, capacities, and a legend showing full paths.
     
     Args:
         G (networkx.Graph): The generated graph.
@@ -442,45 +472,45 @@ def plot_and_save_graph_with_paths(G, capacities, paths, filename="graph.png"):
         paths (dict): Dictionary with different paths.
         filename (str): The name of the file to save the graph image.
     """
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(10, 7))
+    
     
     pos = nx.spring_layout(G, seed=42)  # Layout for better visualization
-    
-    # Draw the base graph
+
+    # Draw the base graph with default settings
     nx.draw(G, pos, with_labels=True, node_size=700, node_color="lightblue", edge_color="gray", linewidths=1, font_size=12)
-    
+
     # Draw edge labels (capacities)
     edge_labels = {edge: str(capacities[edge]) for edge in G.edges}
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=10, label_pos=0.5)
-    
-    # Count how many times each edge appears in paths
-    edge_usage = {}
-    for path in paths.values():
-        for edge in path:
-            edge_usage[edge] = edge_usage.get(edge, 0) + 1
 
-    # Highlight paths with different colors and adjust edge width
-    colors = ["red", "blue", "green", "purple", "orange"]
-    for i, (key, path) in enumerate(paths.items()):
-        path_edges = path  # Get list of edges in the path
-        color = colors[i % len(colors)]  # Cycle through colors
-        
-        nx.draw_networkx_edges(G, pos, edgelist=path_edges, edge_color=color, width=2.5, style="dashed", label=f"Path {key}")
+    # Define a distinct color for each path
+    color_map = ["red", "blue", "green", "purple", "orange", "cyan", "magenta", "brown"]
+    path_lines = []  # Store legend handles
+    path_labels = []  # Store legend labels
 
-    # Adjust edge width for overlapping paths
-    for edge, count in edge_usage.items():
-        nx.draw_networkx_edges(G, pos, edgelist=[edge], width=1.5 + count, edge_color="black")
+    # Draw paths with distinct colors
+    for i, (key, path_edges) in enumerate(paths.items()):
+        color = color_map[i % len(color_map)]  # Cycle through colors
+        nx.draw_networkx_edges(G, pos, edgelist=path_edges, edge_color=color, width=2.5, style="solid")
 
-    plt.title("Generated Random Graph with Highlighted Paths")
-    plt.legend(loc="best")
-    
+        # Convert path edges to a readable format
+        full_path = " → ".join([path_edges[0][0]] + [edge[1] for edge in path_edges])
+        path_lines.append(plt.Line2D([0], [0], color=color, linewidth=2.5))
+        path_labels.append(f"{key}: {full_path}")
+
+    # Add a legend for the paths with full paths shown
+    plt.legend(path_lines, path_labels, loc="best", fontsize=9, frameon=True)
+
     # Save the plot
+    plt.title("Generated Random Graph with Full Path Legend")
     plt.savefig(filename, format="png")
-    plt.show()
+    
 
-# Generate graph and plot with paths, then save
-edges, capacities, users, paths, G = generate_random_graph(num_users=6, num_edges=8, seed=42)
-plot_and_save_graph_with_paths(G, capacities, paths, filename=filename)
+# Generate graph and plot with full path legend
+if not default_topology:
+    edges, capacities, users, paths, G = generate_graph_with_random_source_dest_pairs(num_users=6, num_edges=8, seed=42)
+#plot_graph_with_full_path_legend(G, capacities, paths, filename=filename)
 
 main(edges, capacities, users, paths)
 
